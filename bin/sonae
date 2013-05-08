@@ -1,0 +1,344 @@
+#!/bin/bash
+
+mode=''
+verbose=false
+rc_file=backuprc
+
+
+# check rsync version
+rsync_version=$(rsync --version | grep -o -e "rsync \+version [0-9\.]\+" | grep -o -e "[0-9\.]\+")
+#rsync_version="2.0.0"
+if [ 1 -ne $(echo -e "3.0.0\n$rsync_version" | sort -nr | grep -n $rsync_version | head -n 1 | cut -f1 -d:) ]; then
+  echo "Should be use rsync version 3.0.0 later" >&2
+fi
+
+function usage() {
+  echo 'usage [options] <command>'
+  echo 'OPTIONS'
+  echo '    -v --verbose'
+  echo '    -h --help'
+  echo ''
+  echo 'COMMANDS'
+  echo '    help'
+  echo '    init'
+  echo '    backup'
+}
+
+function usage_init() {
+  echo 'usage [options] init <name>'
+  echo 'OPTIONS'
+  echo '    <name>   backup name'
+}
+
+function usage_backup() {
+  echo 'usage [options] backup'
+}
+
+function help() {
+  usage
+  exit 0
+}
+
+function parse_arg_of_init() {
+  mode='init'
+  name=$2
+  if [[ ! "$name" =~ ^[[:alpha:]][a-zA-Z0-9_]*$ ]]; then
+    echo "Invalid name : \"${name}\"" >&2
+    usage_init
+    exit 1
+  fi
+}
+
+function parse_arg_of_backup() {
+  mode='backup'
+}
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    init)
+      parse_arg_of_init $*; set --;;
+    backup)
+      parse_arg_of_backup $*; set --;;
+    help | -h | --help)
+      help;;
+    -v | --verbose)
+      verbose=true;;
+    --)
+      shift; break;;
+    *)
+      echo 'Invalid argument' >&2
+      usage
+      exit 1
+      break;;
+  esac
+  shift
+done
+
+
+
+function run() {
+  local label len cmd ret divider
+  label=$1
+  shift
+  cmd="$@"
+  len=$((45 - ${#label}))
+  divider=$(printf '.%.0s' {1..45})
+  divider=${divider:0:$len}
+  if [ ! -n "$cmd" ]; then
+    printf '%s \e[90m%s\e[m \e[30;43m %s \e[m\n' "${label}" "${divider}" 'SKIP '
+    return 0
+  fi
+  if $verbose; then
+    echo "${cmd}"
+  fi
+  eval $cmd
+  ret=$?
+  if [ 0 -eq $ret ]; then
+    printf '%s \e[90m%s\e[m \e[30;42m %s \e[m\n' "${label}" "${divider}" 'OK   '
+  else
+    printf '%s \e[90m%s\e[m \e[97;41m %s \e[m\n' "${label}" "${divider}" "NG (${ret})" >&2
+  fi
+  return $ret
+}
+
+function prefix_filter() {
+  grep -e "^[0-9]\{8\}T[0-9]\{6\}"
+}
+
+function mk_link() {
+  local src dest
+  src=$1
+  dest=$2
+  rm -rf $dest
+  ln $src $dest
+}
+
+function remove_old() {
+  local dir expired_on file date ret
+  dir=$1
+  expired_on=$2
+  expired_on=$(date -d "${expired_on}" "+%y%m%d")
+  for file in $(ls -1 $dir | prefix_filter); do
+    date=$(echo $file | grep -o -e "^[0-9]\{8\}")
+    if [ "$date" -le  $expired_on ]; then
+      rm -rf "${dir}/${file}" || (ret=$?; echo "could not remove ${dir}/${file}" >&2 && exit $ret)
+    fi
+  done
+}
+
+
+function confirm() {
+  local msg ans
+  msg=$1
+  echo -n "${msg} [Y/n] : "
+  read ans
+  case $ans in
+    [Yy]*) return 0;;
+    [Nn]*) return 1;;
+    *) return 0;;
+  esac
+}
+
+function err1() {
+  echo "Not found ${rc_file} file" >&2
+  exit 1
+}
+
+function find_base_dir() {
+  local dir
+  dir=$(pwd)
+  while true; do
+    [ "${dir}" = "/" ] && return 1
+    [ -f "${dir}/${rc_file}" ] && break
+    dir=$(dirname $dir)
+  done
+  echo $dir
+  return 0
+}
+
+function do_init() {
+  local dir sub_dir filepath
+
+  dir="./${name}"
+  if [ -a ${dir} ]; then
+    echo "${file} already exists" >&2
+    exit 1
+  fi
+
+  sub_dir='backup.d'
+  mkdir -p "${dir}/${sub_dir}"
+
+  filepath="${dir}/README.md"
+  echo "${filepath}"
+  cat <<"EOD"> "${filepath}"
+# backup.d
+
+## Overview
+
+Custom script when backup.
+
+## backup.d
+
+### Rules
+
+* Should be __bash__ shell script.
+* Only executing __*.sh__ file name pattern.
+* To execute in current snapshot directory.
+
+### Useful snipet
+
+**backup_home** variable is base directory of the backup.
+and after load **backuprc**.
+
+  backup_home=$(cd $(dirname $0)/.. && pwd)
+  [ -f "${backup_home}/backuprc" ] && source "${backup_home}/backuprc"
+
+EOD
+
+  filepath="${dir}/${rc_file}"
+  echo "${filepath}"
+  cat <<"EOD"> "${filepath}"
+#identity_file="${backup_home}/id_rsa"
+#remote=foo@example.com
+#db_user=mysql
+#db_pass=password
+#db_name=database_name
+#rsync_opts="-e 'ssh -i ${identity_file}'"
+EOD
+
+  filepath="${dir}/backuplist"
+  echo "${filepath}"
+  cat <<"EOD"> "${filepath}"
+# Shoud not be the directory separator at last char.
+#foo@example.com:/path/to/directory_or_file
+#
+EOD
+
+  filepath="${dir}/${sub_dir}/cron.sh.sample"
+  echo "${filepath}"
+  cat <<"EOD"> "${filepath}"
+backup_home=$(cd $(dirname $0)/.. && pwd)
+[ -f "${backup_home}/backuprc" ] && source "${backup_home}/backuprc"
+
+ssh_opts=""
+if [ -n "${identity_file}" ]; then
+  ssh_opts="${ssh_opts} -i ${identity_file}"
+fi
+ssh $ssh_opts "${remote}" crontab -l > "./clontab.txt"
+EOD
+
+  filepath="${dir}/${sub_dir}/mysqldump.sh.sample"
+  echo "${filepath}"
+  cat <<"EOD"> "${filepath}"
+backup_home=$(cd $(dirname $0)/.. && pwd)
+[ -f "${backup_home}/backuprc" ] && source "${backup_home}/backuprc"
+
+ssh_opts=""
+if [ -n "${identity_file}" ]; then
+  ssh_opts="${ssh_opts} -i ${identity_file}"
+fi
+ssh $ssh_opts "${remote}" mysqldump -u"${db_user}" -p"${db_pass}" "${db_name}" > "./${db_name}.sql"
+EOD
+
+}
+
+function do_backup() {
+  local backup_home rsync_opts snapshot_dir archive_dir current_snapshot_dir last_snapshot now src name label
+  backup_home=$(find_base_dir) || err1
+  echo "backup_home=${backup_home}"
+
+  rsync_opts=""
+  snapshot_dir="${backup_home}/snapshots"
+  archive_dir="${backup_home}/archive"
+  current_snapshot_dir="${snapshot_dir}/current"
+
+  if [ -f "${backup_home}/backuprc" ]; then
+    source "${backup_home}/backuprc"
+  fi
+
+  now=$(date "+%Y%m%dT%H%M%S%Z")
+
+  rm -rf   "${snapshot_dir}/${now}"
+  rm -rf   "${current_snapshot_dir}"
+  mkdir -p "${current_snapshot_dir}"
+  mkdir -p "${archive_dir}/daily"
+  mkdir -p "${archive_dir}/weekly"
+  mkdir -p "${archive_dir}/monthly"
+
+  last_snapshot=$(ls -1 $snapshot_dir | prefix_filter | sort -r | head -n 1)
+
+  # run rsync
+  # Shoud not be the directory separator at last char.
+  #src="satoruk@ubuntu.localhost:/srv/projects/dev.wyrd.cms/wp_wts_storage"
+  rsync_opts="-az --delete ${rsync_opts}"
+  if ! $verbose; then
+    rsync_opts="--quiet ${rsync_opts}"
+  fi
+  if [ ! -n "${last_snapshot}" ]; then
+    rsync_opts="${rsync_opts} --link-dest=../${last_snapshot}"
+  fi
+  if $verbose; then
+    rsync_opts="--verbose ${rsync_opts}"
+    echo "rsync_opts=${rsync_opts}"
+  fi
+  if [ -f "${backup_home}/backuplist" ]; then
+    for src in $(cat "${backup_home}/backuplist" | grep -v '^#'); do
+      name=$(basename "$src")
+      run "rsync (${name})" rsync $rsync_opts "${src}" "${current_snapshot_dir}"
+    done
+  fi
+
+  # exec backup.d
+  if [ -d "${backup_home}/backup.d" ]; then
+    pushd $current_snapshot_dir > /dev/null
+    for src in $(ls -1 ${backup_home}/backup.d/*.sh); do
+      name=$(basename "$src" '.sh')
+      run "exec backup.d/${name}.sh" bash "$src"
+    done
+    popd > /dev/null
+  fi
+
+  run "Create snapshot (${now})" mv "${current_snapshot_dir}" "${snapshot_dir}/${now}"
+
+
+  pushd $snapshot_dir > /dev/null
+  rm -rf "${archive_dir}/daily/${now}.tar.gz"
+  run "Create a daily arcive" tar czf "${archive_dir}/daily/${now}.tar.gz" "${now}"
+  popd > /dev/null
+
+
+  label="Create a weekly arcive"
+  if [ 2 -ne $(date "+%w") ]; then # Sun:0 Mon:1 Tue:2 Wed:3 Thu:4 Fri:5 Sat:6
+    run "$label"
+  else
+    run "$label" mk_link "${archive_dir}/daily/${now}.tar.gz" "${archive_dir}/weekly/${now}.tar.gz"
+  fi
+
+  label="Create a monthly arcive"
+  if [ 1 -ne $(date "+%e") ]; then
+    run "$label"
+  else
+    run "$label" mk_link "${archive_dir}/daily/${now}.tar.gz" "${archive_dir}/monthly/${now}.tar.gz"
+  fi
+
+  # Remove old
+  run 'Remove old archives (Daily  )' remove_old "${archive_dir}/daily"   '3 days ago'
+  run 'Remove old archives (Weekly )' remove_old "${archive_dir}/weekly"  '4 weeks ago'
+  run 'Remove old archives (Monthly)' remove_old "${archive_dir}/monthly" '12 months ago'
+  run 'Remove old snapshots'          remove_old "${snapshot_dir}"        '7 months ago'
+}
+
+case $mode in
+  init)
+    do_init;;
+  backup)
+    do_backup;;
+  *)
+    echo "unknown mode : ${mode}" >&2
+    usage
+    exit 1;;
+esac
+
+
+
+
