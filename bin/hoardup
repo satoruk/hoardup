@@ -1,6 +1,8 @@
 #!/bin/bash
 
+scriptpath=$(readlink -f $0)
 scriptname=$(basename $0)
+version=0.1.0
 mode=''
 verbose=false
 rc_file=backuprc
@@ -16,11 +18,13 @@ fi
 function usage() {
   echo "usage ${scriptname} [options] <command>"
   echo 'OPTIONS'
+  echo '    -V --version'
   echo '    -v --verbose'
   echo '    -h --help'
   echo ''
   echo 'COMMANDS'
   echo '    help'
+  echo '    self-update'
   echo '    init'
   echo '    backup'
 }
@@ -38,6 +42,15 @@ function usage_backup() {
 function help() {
   usage
   exit 0
+}
+
+function version() {
+  echo $version
+  exit 0
+}
+
+function parse_arg_of_self_update() {
+  mode='self-update'
 }
 
 function parse_arg_of_init() {
@@ -60,8 +73,12 @@ while [ $# -gt 0 ]; do
       parse_arg_of_init $*; set --;;
     backup)
       parse_arg_of_backup $*; set --;;
+    self-update)
+      parse_arg_of_self_update $*; set --;;
     help | -h | --help)
       help;;
+    -V | --version)
+      version;;
     -v | --verbose)
       verbose=true;;
     --)
@@ -155,6 +172,25 @@ function find_base_dir() {
   done
   echo $dir
   return 0
+}
+
+function do_self_update() {
+  local tmp_file tmp_version
+  tmp_file=/tmp/hoardup.tmp
+  curl -# -o ${tmp_file} https://raw.github.com/satoruk/hoardup/master/bin/hoardup
+  tmp_version=$(bash ${tmp_file} --version 2> /dev/null)
+  tmp_version=1.0.0
+  if [ $version = $(echo -e "$version\n$tmp_version" | sort -nr | head -n 1) ]; then
+    run 'self-update'
+    return $?
+  fi
+  if confirm 'Do you want to update?'; then
+    run 'self-update' "cat ${tmp_file} > ${scriptpath}"
+    return $?
+  else
+    run 'self-update'
+    return $?
+  fi
 }
 
 function do_init() {
@@ -330,6 +366,8 @@ function do_backup() {
 }
 
 case $mode in
+  self-update)
+    do_self_update;;
   init)
     do_init;;
   backup)
