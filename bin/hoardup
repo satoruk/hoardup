@@ -1,5 +1,6 @@
 #!/bin/bash
 
+scriptname=$(basename $0)
 mode=''
 verbose=false
 rc_file=backuprc
@@ -13,7 +14,7 @@ if [ 1 -ne $(echo -e "3.0.0\n$rsync_version" | sort -nr | grep -n $rsync_version
 fi
 
 function usage() {
-  echo 'usage [options] <command>'
+  echo "usage ${scriptname} [options] <command>"
   echo 'OPTIONS'
   echo '    -v --verbose'
   echo '    -h --help'
